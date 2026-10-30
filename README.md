@@ -46,54 +46,269 @@ are handled by IBus's simple engine.
 Use your distribution's system Python and PyGObject packages. A virtual
 environment may not include the desktop's GObject introspection bindings.
 
-## Install
+## Install: step by step
 
-Run these commands in a terminal inside your GNOME session:
+Follow these steps from a terminal opened **inside your GNOME desktop session**.
+The commands below use `/usr/bin/python3`, the system Python, to avoid missing
+GObject bindings in a virtual environment or a separately installed Python.
+You only need `sudo` for distribution packages, **not** for Accent Hold itself.
+
+### 1. Check your desktop session
+
+Run:
+
+```sh
+echo "$XDG_CURRENT_DESKTOP"
+echo "$XDG_SESSION_TYPE"
+```
+
+The first result should include `GNOME` (for example, `GNOME` or `ubuntu:GNOME`)
+and the second should be `wayland`. This guide targets GNOME on Wayland; other
+desktops and X11 have not been validated by this project.
+
+### 2. Install the dependencies
+
+Choose **only the commands for your distribution**. On a regular GNOME desktop,
+some of these packages may already be installed.
+
+**Ubuntu / Debian:**
+
+```sh
+sudo apt update
+sudo apt install git python3 python3-gi gir1.2-ibus-1.0 ibus
+```
+
+**Fedora Workstation:**
+
+```sh
+sudo dnf install git python3 python3-gobject ibus python3-ibus
+```
+
+**Arch Linux:**
+
+```sh
+sudo pacman -S --needed git python python-gobject ibus
+```
+
+These package-manager commands are for conventional package-based installations.
+On an immutable/Atomic system, use your distribution's host-package workflow;
+installing the dependencies only inside a container does not provide them to
+the desktop engine.
+
+Check Python and the IBus bindings:
+
+```sh
+/usr/bin/python3 --version
+/usr/bin/python3 -c 'import gi; gi.require_version("IBus", "1.0"); from gi.repository import IBus; print("IBus bindings OK")'
+```
+
+You need Python **3.10 or newer**. The second command should print
+`IBus bindings OK`. Resolve any import error before continuing.
+
+Package references: [Ubuntu IBus dependencies](https://packages.ubuntu.com/noble/ibus),
+[Fedora PyGObject](https://developer.fedoraproject.org/tech/languages/python/pygobject.html),
+[Fedora IBus Python bindings](https://packages.fedoraproject.org/pkgs/ibus/python3-ibus/),
+and [Arch IBus](https://archlinux.org/packages/extra/x86_64/ibus/).
+
+### 3. Download Accent Hold
+
+Open the directory where you want to keep the source, then run:
 
 ```sh
 git clone https://github.com/Nekenlight/accent-hold.git
 cd accent-hold
-python3 run.py --check
-python3 tools/install.py install --dry-run
-python3 tools/install.py install --refresh-cache
 ```
 
-The installer places the engine in `~/.local/libexec/accent-hold/` and its IBus
-descriptor in `~/.local/share/ibus/component/accent-hold.xml`. It rebuilds the
-user's IBus registry cache, including system engines and additional component
-paths. It does not install packages or change system files, input sources or
-the selected keyboard layout.
+Run the remaining `run.py` and `tools/install.py` commands from **this repository
+folder**. Keep the folder for later updates and uninstallation. If you already
+have a clone, use the [update instructions](#update-an-existing-installation)
+instead of cloning over it.
 
-**Log out and back in**, then open GNOME Settings → Keyboard → Input Sources →
-Add. Find **Accent Hold**, possibly under English or other input sources, and
-select it from the input-source menu. Keep your regular input source available
-so you can switch back with Super+Space.
+### 4. Check that IBus is reachable
 
-Check the active engine with `ibus engine`; the expected output is `accent-hold`.
-The engine requests IBus's `default` layout and interprets received symbols
-rather than assuming QWERTY positions. Physical AZERTY/QWERTZ keyboards and
-multiple-layout configurations still need desktop testing. Number shortcuts use
-the **produced digits**, so some layouts require Shift; arrows and mouse
-selection are also available.
+```sh
+/usr/bin/python3 run.py --check
+```
 
-Installing the same version again is safe. The installer refuses to overwrite
-unmanaged files, local changes or a different version. To update this prototype,
-uninstall the previous version first, then install the new one.
+The result should contain:
+
+```text
+IBus connected; PyGObject available
+```
+
+The actual line also includes the Accent Hold version. If you get
+`IBus is unavailable`, see [troubleshooting](#troubleshooting) before proceeding.
+
+### 5. Preview the installation, then install
+
+First, show which files will be written without changing anything:
+
+```sh
+/usr/bin/python3 tools/install.py install --dry-run
+```
+
+Then install for your current user and refresh the IBus registry cache:
+
+```sh
+/usr/bin/python3 tools/install.py install --refresh-cache
+```
+
+**Do not run these two commands with `sudo`.** The installer copies the engine
+into `~/.local/libexec/accent-hold/` and its descriptor into
+`~/.local/share/ibus/component/accent-hold.xml`. It rebuilds your IBus registry
+cache while including system engines and additional component paths. It does
+not change your configured input sources or select Accent Hold for you.
+
+Installing identical files again is safe. If it reports
+`Different installation found`, follow the update instructions rather than
+overwriting files or deleting the installation manifest.
+
+### 6. Log out and back in
+
+Save your work, **log out of the GNOME session**, then log back in. Closing the
+terminal or locking and unlocking the screen is not enough. This allows the
+desktop to discover the newly registered input method.
+
+### 7. Add and select the input source
+
+1. Open **Settings → Keyboard**.
+2. In **Input Sources**, click **Add Input Source** or the **+** button.
+3. Look for **Accent Hold**. You may need to select **English**, open the
+   additional languages list, or use the search field, depending on GNOME's
+   version and language.
+4. Select **Accent Hold**, then click **Add**.
+5. Keep your regular keyboard source in the list.
+6. In the top-bar input-source menu, select **Accent Hold**. You can also cycle
+   through sources with **Super+Space** (`Super` is usually the Windows key).
+
+Now run this in any terminal:
+
+```sh
+ibus engine
+```
+
+Expected output:
+
+```text
+accent-hold
+```
+
+If it shows another engine, select Accent Hold in the input-source menu and
+check again. If you cannot find Accent Hold at all, see troubleshooting below.
+The [GNOME input-source guide](https://help.gnome.org/gnome-help/keyboard-layouts.html)
+explains the desktop's source picker and switching shortcuts.
+
+### 8. Try your first accent
+
+Open a text document or a normal text field in an application:
+
+1. Tap `e` briefly: you should get one `e`.
+2. Hold `e` for about half a second: the accent panel should appear.
+3. Release `e`: the panel should stay open.
+4. Press `2`: the original letter should become `é`.
+5. Try again, but after releasing `e`, press `e` once more to highlight `é`,
+   then press **Enter** to confirm.
+6. Try **Escape** to keep the original letter, and **Shift+E** for uppercase
+   alternatives.
+
+Number shortcuts use the **digits produced by your layout**. If the number row
+produces symbols, use Shift to type the digit, or use arrows and Enter instead.
+The engine requests IBus's `default` layout and interprets symbols instead of
+assuming QWERTY key positions; physical AZERTY/QWERTZ and multiple-layout
+configurations still need broader desktop testing.
+
+Switch back to your normal input source with Super+Space whenever you want
+ordinary key-repeat behavior, including before playing games.
+
+## Troubleshooting
+
+**`No module named gi` or `Namespace IBus not available`**
+
+Install the packages in step 2 for your distribution, then repeat the bindings
+check. Use `/usr/bin/python3`, outside a virtual environment. Installing a
+Python package with pip does not replace the desktop's IBus introspection data.
+
+**`IBus is unavailable`**
+
+Run the command in a terminal opened from the GNOME desktop, as your normal
+user, without `sudo`. An SSH shell, container or unrelated session may not have
+access to the desktop's IBus connection. If you just installed IBus, log out
+and back in, then rerun step 4. Do not replace the desktop's daemon with an
+unrelated IBus instance as part of this guide.
+
+**Accent Hold is missing from Settings**
+
+From the repository folder, rerun:
+
+```sh
+/usr/bin/python3 tools/install.py install --refresh-cache
+```
+
+Then log out and back in. Check the English and additional-language entries in
+the source picker. If GNOME still hides the source, you can optionally show all
+input sources:
+
+```sh
+gsettings set org.gnome.desktop.input-sources show-all-sources true
+```
+
+This changes the visibility of the source list, not the selected source. If it
+was previously disabled, you can restore that setting afterward with:
+
+```sh
+gsettings set org.gnome.desktop.input-sources show-all-sources false
+```
+
+**The source is selected but there is no accent panel**
+
+Check that `ibus engine` reports `accent-hold`. Try a document in a GTK text
+editor and hold a supported letter such as `e` or `a`. Some applications bypass
+input methods or do not forward key releases/preedit correctly. Password and
+PIN fields deliberately do not enable the picker. If one app fails, record its
+version, your desktop session and keyboard layout when reporting the issue.
+
+**`Different installation found` or `Existing unmanaged file`**
+
+The installer refuses to overwrite another version or files it does not own.
+For a managed installation, use the update steps below. If it reports an
+unmanaged or modified file, inspect and back up that file before deciding what
+to do; do not blindly delete it or the manifest.
+
+## Update an existing installation
+
+Switch to your regular keyboard source first. From your existing repository
+folder, uninstall the old copy **before** downloading the new version:
+
+```sh
+/usr/bin/python3 tools/install.py uninstall --dry-run
+/usr/bin/python3 tools/install.py uninstall
+git pull --ff-only
+/usr/bin/python3 tools/install.py install --dry-run
+/usr/bin/python3 tools/install.py install --refresh-cache
+```
+
+Log out and back in to unload the old process and load the new code. Select
+Accent Hold again; if you kept its input-source entry, you do not need to add
+it a second time. A modified installed file makes the uninstall stop so you
+can preserve your changes.
 
 ## Uninstall
 
-Switch to your regular input source and remove Accent Hold from GNOME's input
-sources, then run:
+1. Switch to your regular input source and remove **Accent Hold** from
+   **Settings → Keyboard → Input Sources**.
+2. From the repository folder, preview removal and then uninstall:
 
-```sh
-python3 tools/install.py uninstall --dry-run
-python3 tools/install.py uninstall --refresh-cache
-```
+   ```sh
+   /usr/bin/python3 tools/install.py uninstall --dry-run
+   /usr/bin/python3 tools/install.py uninstall --refresh-cache
+   ```
 
-Log out and back in to unload the engine. Only unchanged files recorded in the
-installation manifest are removed. Additional files, including Python bytecode
-caches, are left alone. The IBus cache is rebuilt; input-source preferences are
-not rewritten. Use `--prefix` to test installation in a temporary directory.
+3. Log out and back in to unload the engine.
+
+Only unchanged files recorded in the installation manifest are removed.
+Additional files, including Python bytecode caches, are left alone. The IBus
+cache is rebuilt; input-source preferences are not rewritten. Use `--prefix`
+to test installation in a temporary directory.
 
 ## Compatibility and games
 
