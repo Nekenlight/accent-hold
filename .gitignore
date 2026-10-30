@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.cache/
+.coverage
+htmlcov/
+.env
+.env.*
+*.log
+install-manifest.json
+.DS_Store
+.idea/
+.vscode/
