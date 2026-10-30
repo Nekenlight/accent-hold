@@ -4,6 +4,16 @@ macOS-style press-and-hold accents for **GNOME on Wayland**, built with Python,
 PyGObject and IBus. This prototype uses the native IBus candidate panel; no
 GNOME Shell extension is required.
 
+## Screenshots
+
+Accent choices after holding `e`:
+
+![Native IBus accent picker showing alternatives for e](docs/images/accent-picker-e.png)
+
+Selecting an alternative for `i`:
+
+![Native IBus accent picker with an alternative for i highlighted](docs/images/accent-picker-i.png)
+
 ## Usage
 
 Hold `e` for **500 ms** to open `è é ê ë ē ė ę ě`, then release it. Choose an
