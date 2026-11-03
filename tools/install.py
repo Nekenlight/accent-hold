@@ -18,6 +18,7 @@ FILES = ("run.py", "LICENSE", "accent_hold/__init__.py", "accent_hold/core.py",
 INSTALL_DIR = Path("libexec/accent-hold")
 COMPONENT = Path("share/ibus/component/accent-hold.xml")
 MANIFEST = INSTALL_DIR / "install-manifest.json"
+GNOME_SERVICE = Path("share/systemd/user/org.freedesktop.IBus.session.GNOME.service.d/accent-hold.conf")
 
 
 def digest(data):
@@ -43,10 +44,22 @@ def payload(prefix):
         ET.SubElement(engine, key).text = value
     ET.indent(root)
     files[COMPONENT] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    # A one-time write-cache is lost when IBus rebuilds its registry after an
+    # update. Give the GNOME daemon the component path on every startup and
+    # rescan it, even when a distribution-provided cache takes precedence.
+    paths = os.pathsep.join(component_paths(prefix))
+    value = paths.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    files[GNOME_SERVICE] = (
+        "[Service]\n"
+        f'Environment="IBUS_COMPONENT_PATH={value}"\n'
+        "ExecStart=\n"
+        "ExecStart=sh -c 'exec /usr/bin/ibus-daemon --cache=refresh --panel disable "
+        '$([ "$XDG_SESSION_TYPE" = "x11" ] && echo "--xim")' + "'\n"
+    ).encode()
     return files
 
 
-def refresh_cache(prefix):
+def component_paths(prefix):
     # IBus does not scan the per-user component directory by default. Include
     # system engines and any caller-specified directories when rebuilding it.
     system_dir = Path("/usr/share/ibus/component")
@@ -58,10 +71,15 @@ def refresh_cache(prefix):
         system_dir = Path(pkg_config.stdout.strip()) / "ibus/component"
     user_dirs = [prefix / "share/ibus/component"]
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    user_dirs.append(data_home / "ibus/component")
-    paths = [str(p) for p in user_dirs if p.is_dir()] + [str(system_dir)]
+    if (data_home / "ibus/component").is_dir():
+        user_dirs.append(data_home / "ibus/component")
+    paths = [str(p) for p in user_dirs] + [str(system_dir)]
     paths.extend(filter(None, os.environ.get("IBUS_COMPONENT_PATH", "").split(os.pathsep)))
-    env = dict(os.environ, IBUS_COMPONENT_PATH=os.pathsep.join(dict.fromkeys(paths)))
+    return list(dict.fromkeys(paths))
+
+
+def refresh_cache(prefix):
+    env = dict(os.environ, IBUS_COMPONENT_PATH=os.pathsep.join(component_paths(prefix)))
     subprocess.run(["ibus", "write-cache"], env=env, check=True)
 
 
@@ -74,7 +92,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     prefix = args.prefix.expanduser().resolve()
     marker = prefix / MANIFEST
-    allowed = {INSTALL_DIR / name for name in FILES} | {COMPONENT}
+    legacy_allowed = {INSTALL_DIR / name for name in FILES} | {COMPONENT}
+    allowed = legacy_allowed | {GNOME_SERVICE}
     if args.action == "install":
         files = payload(prefix)
         # Refuse to overwrite another installation or local edits, including
@@ -104,7 +123,7 @@ def main(argv=None):
         if not marker.is_file():
             raise ValueError(f"No managed installation found in {prefix}")
         manifest = json.loads(marker.read_text())
-        if set(manifest) != {str(p) for p in allowed}:
+        if set(manifest) not in ({str(p) for p in allowed}, {str(p) for p in legacy_allowed}):
             raise ValueError("Invalid installation manifest.")
         for path, expected in manifest.items():
             target = prefix / path

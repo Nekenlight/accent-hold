@@ -1,4 +1,5 @@
 import contextlib
+import json
 import io
 from pathlib import Path
 import shlex
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from tools.install import COMPONENT, INSTALL_DIR, MANIFEST, main
+from tools.install import COMPONENT, GNOME_SERVICE, INSTALL_DIR, MANIFEST, main
 
 
 class InstallTests(unittest.TestCase):
@@ -47,6 +48,23 @@ class InstallTests(unittest.TestCase):
             self.run_installer("install")
         self.assertEqual(target.read_text(), "another engine")
         self.assertFalse((self.prefix / MANIFEST).exists())
+
+    def test_gnome_discovers_components_without_existing_cache(self):
+        self.run_installer("install")
+        service = (self.prefix / GNOME_SERVICE).read_text()
+        self.assertIn(str(self.prefix / "share/ibus/component"), service)
+        self.assertIn("--cache=refresh", service)
+        self.assertIn("--panel disable", service)
+
+    def test_legacy_installation_can_be_uninstalled(self):
+        self.run_installer("install")
+        (self.prefix / GNOME_SERVICE).unlink()
+        marker = self.prefix / MANIFEST
+        manifest = json.loads(marker.read_text())
+        del manifest[str(GNOME_SERVICE)]
+        marker.write_text(json.dumps(manifest))
+        self.run_installer("uninstall")
+        self.assertFalse(marker.exists())
 
     def test_modified_files_are_preserved_on_uninstall(self):
         self.run_installer("install")

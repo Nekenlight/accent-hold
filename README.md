@@ -159,6 +159,14 @@ into `~/.local/libexec/accent-hold/` and its descriptor into
 cache while including system engines and additional component paths. It does
 not change your configured input sources or select Accent Hold for you.
 
+The installer also adds a user systemd drop-in for GNOME's IBus service under
+`~/.local/share/systemd/user/`. It supplies the component directories and asks
+IBus to rescan them at startup. This keeps Accent Hold discoverable when a
+system update invalidates the registry cache. See the
+[IBus registry documentation](https://ibus.github.io/docs/ibus-1.5/IBusRegistry.html).
+This persistent setup requires GNOME's `org.freedesktop.IBus.session.GNOME.service`;
+other session launch mechanisms need their own configuration.
+
 Installing identical files again is safe. If it reports
 `Different installation found`, follow the update instructions rather than
 overwriting files or deleting the installation manifest.
