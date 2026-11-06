@@ -12,6 +12,14 @@ class Key:
     release: bool = False
     shortcut: bool = False
     modifier: bool = False
+    # Preserve the adapter's original symbol and modifiers for deferred input.
+    keyval: int = 0
+    state: int = 0
+
+
+@dataclass(frozen=True)
+class ForwardKey:
+    key: Key
 
 
 @dataclass(frozen=True)
@@ -46,7 +54,7 @@ class CancelTimer:
     pass
 
 
-Action = Preedit | Commit | Candidates | HideCandidates | StartTimer | CancelTimer
+Action = Preedit | Commit | ForwardKey | Candidates | HideCandidates | StartTimer | CancelTimer
 
 
 @dataclass(frozen=True)
@@ -61,6 +69,7 @@ class Pending:
     code: int
     variants: tuple[str, ...]
     token: int
+    press: Key
     held: bool = True
     menu: bool = False
     selected: int = 0
@@ -74,6 +83,8 @@ class AccentComposer:
         self.pending: Pending | None = None
         self._serial = 0
         self._consumed: set[int] = set()
+        # Overlapping typing can forward a press before its physical release.
+        self._forward_releases: set[int] = set()
 
     def key(self, event: Key, *, eligible: bool = True) -> Result:
         actions: list[Action] = []
@@ -81,10 +92,16 @@ class AccentComposer:
             if event.code not in self._consumed:
                 return Result()
             self._consumed.remove(event.code)
+            if event.code in self._forward_releases:
+                self._forward_releases.remove(event.code)
+                return Result(True, (ForwardKey(event),))
             if self.pending and event.code == self.pending.code:
                 self.pending.held = False
                 if not self.pending.menu:
+                    forward_release = not self.pending.letter.isupper()
                     actions.extend(self._finish(self.pending.letter))
+                    if forward_release:
+                        actions.append(ForwardKey(event))
             return Result(True, tuple(actions))
 
         # Includes repeats after selection while the original letter is held.
@@ -120,9 +137,10 @@ class AccentComposer:
         variants = variants_for(event.name) if len(event.name) == 1 else ()
         if eligible and variants:
             self._serial += 1
-            self.pending = Pending(event.name, event.code, variants, self._serial)
+            self.pending = Pending(event.name, event.code, variants, self._serial, event)
             self._consumed.add(event.code)
-            actions.extend((Preedit(event.name), StartTimer(self._serial, self.hold_ms)))
+            # Starting preedit here suppresses browser inline autocomplete.
+            actions.append(StartTimer(self._serial, self.hold_ms))
             return Result(True, tuple(actions))
         return Result(False, tuple(actions))
 
@@ -131,7 +149,7 @@ class AccentComposer:
         if not pending or pending.token != token or not pending.held or pending.menu:
             return Result()
         pending.menu = True
-        return Result(True, (Candidates(pending.variants),))
+        return Result(True, (Preedit(pending.letter), Candidates(pending.variants)))
 
     def choose(self, index: int) -> Result:
         pending = self.pending
@@ -142,13 +160,28 @@ class AccentComposer:
     def reset(self) -> Result:
         """Discard uncommitted text; never commit into a different focus target."""
         self._consumed.clear()
+        self._forward_releases.clear()
         return Result(False, tuple(self._finish(None)))
 
     def _finish(self, text: str | None) -> list[Action]:
         if not self.pending:
             return []
+        pending = self.pending
         self.pending = None
-        actions: list[Action] = [CancelTimer(), HideCandidates(), Preedit("")]
+        actions: list[Action] = [CancelTimer()]
+        if not pending.menu:
+            if text is not None:
+                # Wayland clients can reinterpret forwarded physical keycodes
+                # using their current modifiers, losing a deferred uppercase
+                # symbol. Commit it without preedit to preserve the exact case.
+                if pending.letter.isupper():
+                    actions.append(Commit(text))
+                    return actions
+                actions.append(ForwardKey(pending.press))
+                if pending.held:
+                    self._forward_releases.add(pending.code)
+            return actions
+        actions.extend((HideCandidates(), Preedit("")))
         if text is not None:
             actions.append(Commit(text))
         return actions

@@ -1,7 +1,7 @@
 import unittest
 
 from accent_hold.core import (
-    AccentComposer, CancelTimer, Candidates, Commit, HideCandidates,
+    AccentComposer, CancelTimer, Candidates, Commit, ForwardKey, HideCandidates,
     Key, Preedit, StartTimer,
 )
 from accent_hold.variants import VARIANTS, variants_for
@@ -25,37 +25,75 @@ class ComposerTests(unittest.TestCase):
     def commits(self, result):
         return [a.text for a in result.actions if isinstance(a, Commit)]
 
-    def test_quick_tap_is_visible_before_commit(self):
+    def test_quick_tap_forwards_keys_without_composition(self):
         start = self.press()
         self.assertTrue(start.handled)
-        self.assertIn(Preedit("e"), start.actions)
+        self.assertFalse(any(isinstance(a, Preedit) for a in start.actions))
         self.assertIn(StartTimer(1, 500), start.actions)
         self.assertEqual(self.commits(start), [])
         end = self.release()
-        self.assertEqual(self.commits(end), ["e"])
-        self.assertIn(Preedit(""), end.actions)
+        self.assertEqual(self.commits(end), [])
+        self.assertEqual([a.key for a in end.actions if isinstance(a, ForwardKey)],
+                         [Key("e", 26), Key("e", 26, release=True)])
+        self.assertFalse(any(isinstance(a, Preedit) for a in end.actions))
         self.assertIn(CancelTimer(), end.actions)
+
+    def forwarded(self, result):
+        return [a.key.name for a in result.actions
+                if isinstance(a, ForwardKey) and not a.key.release]
 
     def test_fast_typing_preserves_order(self):
         output = []
         for name, code in [("e", 26), ("a", 38), ("e", 26)]:
-            output.extend(self.commits(self.press(name, code)))
-            output.extend(self.commits(self.release(name, code)))
+            output.extend(self.forwarded(self.press(name, code)))
+            output.extend(self.forwarded(self.release(name, code)))
         self.assertEqual("".join(output), "eae")
 
-    def test_rolling_keys_commit_before_next_preedit(self):
+    def test_forwarding_preserves_press_and_release_metadata(self):
+        press = Key("a", 38, keyval=97, state=16)
+        release = Key("a", 38, release=True, keyval=97, state=1 << 30)
+        self.core.key(press)
+        self.assertEqual(self.core.key(release).actions,
+                         (CancelTimer(), ForwardKey(press), ForwardKey(release)))
+
+    def test_uppercase_taps_commit_exact_case_without_forwarding_or_preedit(self):
+        for letter in VARIANTS:
+            with self.subTest(letter=letter):
+                self.core.key(Key(letter.upper(), 38, keyval=ord(letter.upper()), state=1))
+                self.release("Shift_L", 50)
+                result = self.release(letter, 38)
+                self.assertEqual(result.actions, (CancelTimer(), Commit(letter.upper())))
+                self.assertIsNone(self.core.pending)
+
+    def test_overlapping_uppercase_commits_once_and_swallows_release(self):
+        self.press("A", 38)
+        result = self.press("e", 26)
+        self.assertEqual(self.commits(result), ["A"])
+        self.assertEqual(self.forwarded(result), [])
+        self.assertEqual(self.release("a", 38).actions, ())
+        self.assertEqual(self.forwarded(self.release("e", 26)), ["e"])
+
+    def test_overlapping_forwarded_key_suppresses_repeat_until_release(self):
+        self.press()
+        self.press("a", 38)
+        self.assertEqual(self.press().actions, ())
+        self.assertEqual(self.release().actions, (ForwardKey(Key("e", 26, release=True)),))
+        self.assertEqual(self.forwarded(self.release("a", 38)), ["a"])
+
+    def test_rolling_keys_forward_before_next_timer(self):
         self.press()
         result = self.press("a", 38)
-        self.assertLess(result.actions.index(Commit("e")), result.actions.index(Preedit("a")))
+        self.assertLess(result.actions.index(ForwardKey(Key("e", 26))),
+                        result.actions.index(StartTimer(2, 500)))
         self.release("e", 26)
-        self.assertEqual(self.commits(self.release("a", 38)), ["a"])
+        self.assertEqual(self.forwarded(self.release("a", 38)), ["a"])
 
     def test_identical_letters_after_release_are_not_repeat(self):
         self.press()
         first = self.release()
         self.press()
         second = self.release()
-        self.assertEqual(self.commits(first) + self.commits(second), ["e", "e"])
+        self.assertEqual(self.forwarded(first) + self.forwarded(second), ["e", "e"])
 
     def test_repeats_before_and_after_timeout_are_absorbed(self):
         self.press()
@@ -75,7 +113,7 @@ class ComposerTests(unittest.TestCase):
         self.assertTrue(self.press().handled)  # Initial letter still held.
         self.assertEqual(self.press().actions, ())
         self.release()
-        self.assertIn(Preedit("e"), self.press().actions)
+        self.assertIn(StartTimer(2, 500), self.press().actions)
 
     def test_release_keeps_menu_and_mouse_selection_works(self):
         self.menu()
@@ -146,14 +184,14 @@ class ComposerTests(unittest.TestCase):
         self.press()
         result = self.press("c", 54, shortcut=True)
         self.assertFalse(result.handled)
-        self.assertEqual(self.commits(result), ["e"])
+        self.assertEqual(self.forwarded(result), ["e"])
         self.assertFalse(self.press("e", 26, shortcut=True).actions)
 
     def test_reset_cancels_without_committing_or_stale_timer(self):
         self.press()
         result = self.core.reset()
         self.assertEqual(self.commits(result), [])
-        self.assertIn(HideCandidates(), result.actions)
+        self.assertEqual(result.actions, (CancelTimer(),))
         self.assertFalse(self.core.timeout(1).handled)
         self.press("a", 38)
         self.assertFalse(self.core.timeout(1).handled)

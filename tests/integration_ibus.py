@@ -117,6 +117,7 @@ class RealIBusTests(unittest.TestCase):
             raise AssertionError("IBus process emitted an exception or critical error")
 
     def setUp(self):
+        self.forwards = []
         self.commits = []
         self.preedits = []
         self.lookups = []
@@ -136,13 +137,16 @@ class RealIBusTests(unittest.TestCase):
 
         pump_until(selected)
         pump_for(0.03)
+        self.forwards.clear()
         self.commits.clear()
         self.preedits.clear()
         self.lookups.clear()
 
     def on_wire_signal(self, _context, _sender, name, parameters):
         values = parameters.unpack()
-        if name == "CommitText":
+        if name == "ForwardKeyEvent":
+            self.forwards.append(values)
+        elif name == "CommitText":
             self.commits.append(values[0][2])
         elif name in ("UpdatePreeditText", "UpdatePreeditTextWithMode"):
             self.preedits.append((values[0][2], values[2]))
@@ -168,11 +172,13 @@ class RealIBusTests(unittest.TestCase):
     def test_quick_release_and_rapid_repetition(self):
         for _ in range(2):
             self.assertTrue(self.key("e"))
-            pump_until(lambda: ("e", True) in self.preedits)
             self.assertTrue(self.key("e", release=True))
-        pump_until(lambda: len(self.commits) == 2)
-        self.assertEqual(self.commits, ["e", "e"])
-        self.assertEqual(self.preedits[-1], ("", False))
+        pump_until(lambda: len(self.forwards) == 4)
+        self.assertEqual([v[:2] for v in self.forwards], [(IBus.KEY_e, 26)] * 4)
+        self.assertEqual([bool(v[2] & IBus.ModifierType.RELEASE_MASK)
+                          for v in self.forwards], [False, True, False, True])
+        self.assertEqual(self.commits, [])
+        self.assertEqual(self.preedits, [])
         pump_for(0.55)
         self.assertFalse(any(visible for _, visible in self.lookups))
 
@@ -187,6 +193,49 @@ class RealIBusTests(unittest.TestCase):
         self.assertTrue(self.key("2", 11, release=True))
         pump_until(lambda: self.commits)
         self.assertEqual(self.commits, ["é"])
+
+    def test_amazon_taps_do_not_start_composition(self):
+        for name, code in zip("amazon", (38, 58, 38, 52, 32, 57)):
+            self.key(name, code)
+            self.key(name, code, release=True)
+        presses = [v[0] for v in self.forwards
+                   if not v[2] & IBus.ModifierType.RELEASE_MASK]
+        self.assertEqual(presses, [IBus.keyval_from_name(c) for c in "aazon"])
+        # m passes through normally; the other five letters have variants.
+        self.assertEqual(self.preedits, [])
+        self.assertEqual(self.commits, [])
+
+    def test_uppercase_taps_preserve_case_after_modifier_release(self):
+        for mask in (IBus.ModifierType.SHIFT_MASK, IBus.ModifierType.LOCK_MASK):
+            for code in (0, 38):
+                with self.subTest(mask=mask, code=code):
+                    self.assertTrue(self.key("A", code, modifiers=int(mask)))
+                    self.key("Shift_L", 50, release=True)
+                    self.assertTrue(self.key("a", code, release=True))
+        self.assertEqual(self.commits, ["A"] * 4)
+        self.assertEqual(self.forwards, [])
+        self.assertEqual(self.preedits, [])
+
+    def test_uppercase_rolling_typing_preserves_case_and_order(self):
+        shift = int(IBus.ModifierType.SHIFT_MASK)
+        self.assertTrue(self.key("A", 38, modifiers=shift))
+        self.assertTrue(self.key("E", 26, modifiers=shift))
+        self.key("Shift_L", 50, release=True)
+        self.assertTrue(self.key("a", 38, release=True))
+        self.assertTrue(self.key("e", 26, release=True))
+        self.assertEqual(self.commits, ["A", "E"])
+        self.assertEqual(self.forwards, [])
+        self.assertEqual(self.preedits, [])
+
+    def test_sync_client_keeps_native_input(self):
+        self.context.set_capabilities(int(IBus.Capabilite.PREEDIT_TEXT
+                                          | IBus.Capabilite.FOCUS
+                                          | IBus.Capabilite.SYNC_PROCESS_KEY))
+        pump_for(0.03)
+        self.assertFalse(self.key("a", 38))
+        self.assertFalse(self.key("a", 38, release=True))
+        self.assertEqual(self.forwards, [])
+        self.assertEqual(self.preedits, [])
 
     def test_shift_and_arrow_selection(self):
         self.open_menu("E")
@@ -215,7 +264,10 @@ class RealIBusTests(unittest.TestCase):
         self.assertTrue(self.key("e", release=True))
         self.assertTrue(self.key("a", 38, release=True))
         self.assertFalse(self.key("b", 56))
-        self.assertEqual(self.commits, ["e", "a"])
+        self.assertEqual(self.commits, [])
+        self.assertEqual([v[0] for v in self.forwards],
+                         [IBus.KEY_e, IBus.KEY_e, IBus.KEY_a, IBus.KEY_a])
+        self.assertEqual(self.preedits, [])
 
     def test_escape_and_shortcut(self):
         self.open_menu()
@@ -260,6 +312,45 @@ class RealIBusTests(unittest.TestCase):
         pump_for(0.03)
         self.assertFalse(self.key("e"))
         self.assertEqual(self.commits, [])
+
+    def test_terminal_passes_native_keys_without_deferred_input(self):
+        self.context.set_content_type(IBus.InputPurpose.TERMINAL, 0)
+        pump_for(0.03)
+        shift = int(IBus.ModifierType.SHIFT_MASK)
+        # Terminal widgets keep this purpose during sudo's no-echo prompt.
+        # Both lowercase and uppercase must follow the native key path.
+        for name, code, state in (("A", 38, shift), ("e", 26, 0),
+                                  ("b", 56, 0), ("C", 54, shift),
+                                  ("1", 10, 0), ("exclam", 10, shift)):
+            self.assertFalse(self.key(name, code, modifiers=state))
+            self.assertFalse(self.key(name, code, release=True, modifiers=state))
+        self.assertFalse(self.key("E", 26, modifiers=shift))
+        pump_for(0.55)
+        self.assertFalse(self.key("E", 26, modifiers=shift))
+        self.assertFalse(self.key("e", 26, release=True))
+        self.assertFalse(self.key("Return", 36))
+        self.assertEqual(self.commits, [])
+        self.assertEqual(self.forwards, [])
+        self.assertEqual(self.preedits, [])
+        self.assertFalse(any(visible for _, visible in self.lookups))
+
+    def test_entering_terminal_discards_pending_input_and_restores_editor_holds(self):
+        self.assertTrue(self.key("A", 38, modifiers=int(IBus.ModifierType.SHIFT_MASK)))
+        self.context.set_content_type(IBus.InputPurpose.TERMINAL, 0)
+        pump_for(0.55)
+        self.assertFalse(self.key("a", 38, release=True))
+        self.assertFalse(self.key("e"))
+        self.assertFalse(self.key("e", release=True))
+        self.assertEqual(self.commits, [])
+        self.assertEqual(self.forwards, [])
+        self.assertEqual(self.preedits, [])
+        self.assertFalse(any(visible for _, visible in self.lookups))
+        self.context.set_content_type(IBus.InputPurpose.FREE_FORM, 0)
+        pump_for(0.03)
+        self.open_menu("E")
+        self.assertTrue(self.key("e", release=True))
+        self.assertTrue(self.key("2", 11))
+        self.assertEqual(self.commits, ["É"])
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)

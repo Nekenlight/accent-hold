@@ -14,7 +14,7 @@ from gi.repository import GLib, IBus  # noqa: E402
 
 from . import __version__
 from .core import (
-    AccentComposer, CancelTimer, Candidates, Commit, HideCandidates,
+    AccentComposer, CancelTimer, Candidates, Commit, ForwardKey, HideCandidates,
     Key, Preedit, Result, StartTimer,
 )
 
@@ -30,6 +30,11 @@ SHORTCUT_KEYS = {
     IBus.KEY_Control_L, IBus.KEY_Control_R, IBus.KEY_Alt_L, IBus.KEY_Alt_R,
     IBus.KEY_Super_L, IBus.KEY_Super_R, IBus.KEY_Meta_L, IBus.KEY_Meta_R,
     IBus.KEY_Hyper_L, IBus.KEY_Hyper_R,
+}
+# A terminal's password prompts usually retain TERMINAL, rather than switching
+# to PASSWORD. Never defer/replay its keys or open candidates over secret input.
+PASSTHROUGH_PURPOSES = {
+    IBus.InputPurpose.PASSWORD, IBus.InputPurpose.PIN, IBus.InputPurpose.TERMINAL,
 }
 
 
@@ -61,6 +66,10 @@ class AccentEngine(IBus.EngineSimple):
             elif isinstance(action, Commit):
                 self.commit_text(IBus.Text.new_from_string(action.text))
                 self._diagnostics["commits"] += 1
+            elif isinstance(action, ForwardKey):
+                key = action.key
+                code = key.code if key.code < 0x10000 else 0
+                self.forward_key_event(key.keyval, code, key.state)
             elif isinstance(action, Candidates):
                 table = IBus.LookupTable.new(9, action.selected, True, True)
                 table.set_orientation(IBus.Orientation.HORIZONTAL)
@@ -86,9 +95,10 @@ class AccentEngine(IBus.EngineSimple):
         char = IBus.keyval_to_unicode(keyval)
         name = char if char and char.isprintable() else IBus.keyval_name(keyval) or ""
         event = Key(
-            name, keycode or (0x10000 + keyval), release,
+            name, keycode or (0x10000 + IBus.keyval_to_lower(keyval)), release,
             bool(state & SHORTCUT_MASK) or keyval in SHORTCUT_KEYS,
             keyval in SHIFT_KEYS,
+            keyval, state,
         )
         # Finish our composition first, then let EngineSimple process dead keys,
         # Compose and Unicode sequences before starting any new accent hold.
@@ -97,8 +107,12 @@ class AccentEngine(IBus.EngineSimple):
         if IBus.EngineSimple.do_process_key_event(self, keyval, keycode, state):
             return True
         can_preedit = bool(self._caps & IBus.Capabilite.PREEDIT_TEXT)
-        sensitive = self._purpose in (IBus.InputPurpose.PASSWORD, IBus.InputPurpose.PIN)
-        return self._apply(self.composer.key(event, eligible=can_preedit and not sensitive))
+        # These clients cannot receive deferred ordinary key events.
+        can_forward = not bool(self._caps & IBus.Capabilite.SYNC_PROCESS_KEY)
+        passthrough = self._purpose in PASSTHROUGH_PURPOSES
+        return self._apply(self.composer.key(
+            event, eligible=can_preedit and can_forward and not passthrough,
+        ))
 
     def do_candidate_clicked(self, index, button, state):
         if button == 1:
@@ -116,13 +130,13 @@ class AccentEngine(IBus.EngineSimple):
 
     def do_set_capabilities(self, caps):
         self._caps = caps
-        if not caps & IBus.Capabilite.PREEDIT_TEXT:
+        if not caps & IBus.Capabilite.PREEDIT_TEXT or caps & IBus.Capabilite.SYNC_PROCESS_KEY:
             self._apply(self.composer.reset())
         IBus.EngineSimple.do_set_capabilities(self, caps)
 
     def do_set_content_type(self, purpose, hints):
         self._purpose = purpose
-        if purpose in (IBus.InputPurpose.PASSWORD, IBus.InputPurpose.PIN):
+        if purpose in PASSTHROUGH_PURPOSES:
             self._apply(self.composer.reset())
         IBus.EngineSimple.do_set_content_type(self, purpose, hints)
 

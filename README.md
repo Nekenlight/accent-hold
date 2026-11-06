@@ -27,9 +27,12 @@ For example: hold `e` (highlighting `è`), release it, press `e` again
 even if you release Shift before cycling.
 
 Escape keeps the original letter. An ordinary key closes the menu, keeps the
-original letter and continues typing. A quick tap appears immediately as
-**preedit text** and is committed on release or before the next key; some
-applications underline this temporary composition.
+original letter and continues typing. A quick tap is forwarded as an ordinary
+key on release or before the next key, without starting text composition. This
+preserves browser address-bar completion. During a long press, the temporary
+**preedit text** appears only when the accent panel opens after 500 ms.
+Quick uppercase taps insert the exact uppercase character directly, without
+preedit, so Wayland clients cannot lose its case when Shift is released.
 
 Only letters with alternatives lose their normal key repeat. Ctrl, Alt and
 Super shortcuts pass through to IBus's simple engine, while AltGr can still
@@ -41,7 +44,7 @@ are handled by IBus's simple engine.
 - Python **3.10+**
 - PyGObject and IBus 1.5 with GObject introspection data
 - A running IBus session and applications that support text composition and
-  forward key-release events
+  forward key-release events and support asynchronous key forwarding
 
 Use your distribution's system Python and PyGObject packages. A virtual
 environment may not include the desktop's GObject introspection bindings.
@@ -272,7 +275,8 @@ gsettings set org.gnome.desktop.input-sources show-all-sources false
 Check that `ibus engine` reports `accent-hold`. Try a document in a GTK text
 editor and hold a supported letter such as `e` or `a`. Some applications bypass
 input methods or do not forward key releases/preedit correctly. Password and
-PIN fields deliberately do not enable the picker. If one app fails, record its
+PIN fields and applications declaring a terminal input context deliberately do
+not enable the picker. If one app fails, record its
 version, your desktop session and keyboard layout when reporting the issue.
 
 **`Different installation found` or `Existing unmanaged file`**
@@ -322,15 +326,19 @@ to test installation in a temporary directory.
 
 This is a prototype, not a universal keyboard interceptor. Applications that
 bypass input methods are outside its coverage. Clients without preedit support
-keep ordinary input without the accent picker. Fields identified as passwords
-or PINs do not activate it. IBus/GNOME positions the panel using information
+keep ordinary input without the accent picker. Clients requiring synchronous
+key processing also keep ordinary input without the picker. Fields identified as passwords,
+PINs or terminals do not activate it. Terminal input stays native automatically,
+including at `sudo` prompts, which usually do not declare a separate password
+context. This also preserves ordinary key repeat in terminal applications.
+IBus/GNOME positions the panel using information
 provided by the application.
 
 **There is no automatic game detection or per-application exclusion yet.** A
 game that forwards keys to an input-method context with preedit support could
 trigger the picker. Switch to your regular input source before playing.
-Terminals, Vim, games, remote sessions and other compositors are outside the
-initial compatibility target.
+Terminal applications that do not declare their input context, Vim, games,
+remote sessions and other compositors are outside the initial compatibility target.
 
 Focus loss, reset or engine deactivation closes the menu and discards any
 **uncommitted** letter to avoid inserting text into a different target.
@@ -352,6 +360,16 @@ a display or changes to the desktop's input sources:
 ```sh
 python3 tests/integration_ibus.py
 python3 tests/integration_ibus.py --installed
+```
+
+An additional test uses GTK3/VTE in an offscreen window and an isolated IBus
+session to check the actual bytes received by a pseudo-terminal, including
+canonical no-echo input like a `sudo` prompt. It uses public test strings and
+does not invoke `sudo` or access passwords. It requires GTK3, VTE introspection
+bindings and an accessible X11/XWayland display (or `xvfb-run`):
+
+```sh
+python3 tests/integration_vte.py
 ```
 
 These tests require `dbus-run-session`, `ibus-daemon` and PyGObject. The second
